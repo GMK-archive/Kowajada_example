@@ -1,88 +1,88 @@
 ﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
 using System.Threading.Tasks;
 
 namespace WpfApp4
 {
     public class GameOfLife
     {
-        // 0 - dead cell, 1 - alive cell
-        public byte[,] GameField { get; private set; }
-        //constructor (default size 64x64)
+        public int Width { get; }
+        public int Height { get; }
+
+        // jednowymiarowy bufor: index = y * Width + x
+        public byte[] Field { get; private set; }
+        private byte[] _buffer;
+
         public GameOfLife(int width = 64, int height = 64)
         {
-            GameField = new byte[width, height];
+            Width = width;
+            Height = height;
+            Field = new byte[Width * Height];
+            _buffer = new byte[Width * Height];
         }
 
+        public ReadOnlySpan<byte> GetGameField() => Field;
+
+        // Optymalizowany NextCycle, równoległy po wierszach
         public void NextCycle()
         {
-            byte[,] newField = new byte[GameField.GetLength(0), GameField.GetLength(1)];
+            int w = Width;
+            int h = Height;
+            byte[] src = Field;
+            byte[] dst = _buffer;
 
-            for(int x = 0; x<GameField.GetLength (0); x++)
+            Parallel.For(0, h, y =>
             {
-                for (int y = 0; y < GameField.GetLength(1); y++)
+                int row = y * w;
+                for (int x = 0; x < w; x++)
                 {
-                    int liveNeibors = CountNeibors(x, y);
+                    int count = 0;
 
-                    if (GameField[x, y] == 1) // alive cell
+                    int y0 = Math.Max(0, y - 1);
+                    int y1 = Math.Min(h - 1, y + 1);
+                    int x0 = Math.Max(0, x - 1);
+                    int x1 = Math.Min(w - 1, x + 1);
+
+                    for (int ny = y0; ny <= y1; ny++)
                     {
-                        if (liveNeibors < 2 || liveNeibors > 3)
-                            newField[x, y] = 0; // cell dies
-                        else
-                            newField[x, y] = 1; // cell stays alive
+                        int noff = ny * w;
+                        for (int nx = x0; nx <= x1; nx++)
+                        {
+                            if (nx == x && ny == y) continue;
+                            count += src[noff + nx];
+                        }
                     }
-                    else // dead cell
+
+                    int idx = row + x;
+                    if (src[idx] == 1)
                     {
-                        if (liveNeibors == 3)
-                            newField[x, y] = 1; // cell becomes alive , since it has 3 neighbour that are alive
-                        else
-                            newField[x, y] = 0; // cell stays dead since it does not aply to the rule of becoming alive
+                        dst[idx] = (count < 2 || count > 3) ? (byte)0 : (byte)1;
+                    }
+                    else
+                    {
+                        dst[idx] = (count == 3) ? (byte)1 : (byte)0;
                     }
                 }
-            }
+            });
 
-            GameField = newField;
-        }
-        public int CountNeibors(int x, int y)
-        {
-            int count = 0;
-
-            for(int i = x-1; i<=x+1; i++)
-            {
-                for(int j = y-1; j<=y+1; j++)
-                {
-                    if (i == x && j == y) continue; // skip the cell itself
-                    if (i >= 0 && i < GameField.GetLength(0) && j >= 0 && j < GameField.GetLength(1))
-                    {
-                        if(GameField[i, j] == 1) count++;
-                    }
-                }
-            }
-
-            return count;
-        }
-
-        public byte[,] GetGameField()
-        {
-                       return GameField;
+            // swap
+            Field = dst;
+            _buffer = src;
         }
 
         public void RandomSeed(int count = 128)
         {
-            Random rand = new Random();
-            while(count > 0)
+            var rand = new Random();
+            int remaining = Math.Min(count, Width * Height);
+            Array.Clear(Field, 0, Field.Length);
+            while (remaining > 0)
             {
-                int x = rand.Next(GameField.GetLength(0));
-                int y = rand.Next(GameField.GetLength(1));
-                if (GameField[x, y] == 0)
+                int idx = rand.Next(Field.Length);
+                if (Field[idx] == 0)
                 {
-                    GameField[x, y] = 1;
-                    count--;
+                    Field[idx] = 1;
+                    remaining--;
                 }
             }
         }
-        
     }
 }

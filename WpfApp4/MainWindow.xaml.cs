@@ -1,5 +1,10 @@
-﻿using System.Drawing;
+﻿using System;
+using System.Diagnostics;
+using System.Drawing;
+using System.Linq;
 using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Data;
@@ -19,82 +24,121 @@ namespace WpfApp4
     /// </summary>
     public partial class MainWindow : Window
     {
-        Bitmap bmp;
         GameOfLife game;
-        DispatcherTimer timer;
+        WriteableBitmap writeableBitmap;
+        byte[] pixelBuffer; // gray8: 1 byte per pixel
+        CancellationTokenSource runCts;
+        int fpsTarget = 120;
+
         public MainWindow()
         {
-
             InitializeComponent();
             NewGame();
-            DrawBoard();
-            timer = new DispatcherTimer();
-            timer.Interval = TimeSpan.FromMilliseconds(16); // Set the interval for the timer (e.g., 16 ms)
-            timer.Stop(); // Start with the timer stopped
-            timer.Tick += Timer_Tick; // Subscribe to the Tick event
-        }
-
-        void Timer_Tick(object sender, EventArgs e)
-        {
-            game.NextCycle(); // Advance the game by one cycle
-            DrawBoard(); // Redraw the board to reflect the new state
-        }
-        private void StartButton_Click(object sender, RoutedEventArgs e)
-        {
-            timer.Start(); // Start the timer when the Start button is clicked
-        }
-
-        private void StopButton_Click(object sender, RoutedEventArgs e)
-        {
-            timer.Stop(); // Stop the timer when the Stop button is clicked
-        }
-
-        private void StepButton_Click(object sender, RoutedEventArgs e)
-        {
-            game.NextCycle(); // Advance the game by one cycle
-            DrawBoard(); // Redraw the board to reflect the new state
-        }
-
-        private void ResetButton_Click(object sender, RoutedEventArgs e)
-        {
-            timer.Stop(); // Stop the timer when resetting the game
-            NewGame(); // Reinitialize the game
-            DrawBoard(); // Redraw the board to reflect the new state
-
+            DrawBoardImmediately(); // initial render
         }
 
         void NewGame()
         {
-            // Initialize the bitmap with the same size as the game field
-            int x = 256;
-            int y = 256;
-            int weight = 8;
-            int maxSeed = (int)(x * y) / weight; //max seed is made from x multiplied by y which creates one half of generation of max seed which is size of image and then divide the size by weight of randomisation which is an amount of concentration of the dots
-            bmp = new Bitmap(x, y);
-            game = new GameOfLife(x, y);
-            game.RandomSeed(maxSeed); // Initialize the game with a random seed
+            int x = 1024;
+            int y = 1024;
+            int weight = 2;
+            int maxSeed = (x * y) / weight;
 
+            game = new GameOfLife(x, y);
+            game.RandomSeed(maxSeed);
+
+            // create WriteableBitmap once
+            writeableBitmap = new WriteableBitmap(x, y, 96, 96, PixelFormats.Gray8, null);
+            pixelBuffer = new byte[x * y]; // reuse for each frame
+
+            GameOfLifeImage.Source = writeableBitmap;
         }
 
-        void DrawBoard()
+        // Szybkie, jednorazowe zaktualizowanie obrazu (UI thread)
+        void DrawBoardImmediately()
         {
-            for (int x = 0; x < game.GetGameField().GetLength(0); x++)
+            var field = game.GetGameField().ToArray();
+            // mapujemy 1 -> 0 (czarny), 0 -> 255 (biały) - możesz odwrócić
+            for (int i = 0; i < field.Length; i++)
             {
-                for (int y = 0; y < game.GetGameField().GetLength(1); y++)
-                {
-                    if (game.GetGameField()[x, y] == 1)
-                        bmp.SetPixel(x, y, System.Drawing.Color.Black); // Set alive cells to black
-                    else
-                        bmp.SetPixel(x, y, System.Drawing.Color.White); // Set dead cells to white
-                }
+                pixelBuffer[i] = (byte)(field[i] == 1 ? 0 : 255);
             }
-            // Convert Bitmap to BitmapSource for WPF Image control
-            var bitmapSource = Imaging.CreateBitmapSourceFromHBitmap(
-                bmp.GetHbitmap(),
-                IntPtr.Zero,
-                Int32Rect.Empty,
-                BitmapSizeOptions.FromEmptyOptions());
-            GameOfLifeImage.Source = bitmapSource; // Set the Image control's source to the BitmapSource
+
+            int stride = writeableBitmap.PixelWidth; // Gray8 : 1 byte per pixel
+            writeableBitmap.WritePixels(new Int32Rect(0, 0, writeableBitmap.PixelWidth, writeableBitmap.PixelHeight),
+                pixelBuffer, stride, 0);
+        }
+
+        // Uruchom symulację w tle; aktualizacja obrazu na UI thread
+        private void StartButton_Click(object sender, RoutedEventArgs e)
+        {
+            if (runCts != null) return; // już działa
+            runCts = new CancellationTokenSource();
+            var ct = runCts.Token;
+            int frameMs = Math.Max(1, 1000 / fpsTarget);
+
+            Task.Run(async () =>
+            {
+                try
+                {
+                    while (!ct.IsCancellationRequested)
+                    {
+                        var sw = Stopwatch.StartNew();
+
+                        // 1) oblicz następny cykl (w tle)
+                        game.NextCycle();
+
+                        // 2) przygotuj bufor pikseli (w tle)
+                        var field = game.GetGameField().ToArray();
+                        for (int i = 0; i < field.Length; i++)
+                        {
+                            pixelBuffer[i] = (byte)(field[i] == 1 ? 0 : 255);
+                        }
+
+                        // 3) zaktualizuj WriteableBitmap na wątku UI (krótka operacja)
+                        await Dispatcher.InvokeAsync(() =>
+                        {
+                            int stride = writeableBitmap.PixelWidth;
+                            writeableBitmap.WritePixels(new Int32Rect(0, 0, writeableBitmap.PixelWidth, writeableBitmap.PixelHeight),
+                                pixelBuffer, stride, 0);
+                        });
+
+                        sw.Stop();
+                        int wait = frameMs - (int)sw.ElapsedMilliseconds;
+                        if (wait > 0) await Task.Delay(wait, ct);
+                    }
+                }
+                catch (OperationCanceledException) { }
+            }, ct);
+        }
+
+        private async void StopButton_Click(object sender, RoutedEventArgs e)
+        {
+            if (runCts == null) return;
+            runCts.Cancel();
+            // pozwól zadaniu się zakończyć
+            await Task.Delay(1);
+            runCts = null;
+        }
+
+        private void StepButton_Click(object sender, RoutedEventArgs e)
+        {
+            // pojedynczy krok na UI thread
+            game.NextCycle();
+            DrawBoardImmediately();
+        }
+
+        private async void ResetButton_Click(object sender, RoutedEventArgs e)
+        {
+            if (runCts != null)
+            {
+                runCts.Cancel();
+                await Task.Delay(1);
+                runCts = null;
+            }
+
+            NewGame();
+            DrawBoardImmediately();
         }
     }
 }
