@@ -7,6 +7,21 @@
         mc:Ignorable="d"
         Title="MainWindow" Height="450" Width="800">
     <Grid>
-        <Image x:Name="GameOfLifeImage" Stretch="Uniform"/>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="2*"/>
+            <ColumnDefinition Width="8*"/>
+        </Grid.ColumnDefinitions>
+        <Grid.RowDefinitions>
+        <RowDefinition Height="Auto"/>
+        <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+        <StackPanel Orientation="Horizontal" Margin="10" Grid.Column="1" Grid.Row="0">
+            <Button x:Name="StartButton" Content="Start" Margin="0,0,0,10" Click="StartButton_Click"/>
+            <Button x:Name="StopButton" Content="Stop" Margin="10,0,0,10" Click="StopButton_Click"/>
+            <Button x:Name="StepButton" Content="Next step" Margin="10,0,0,10" Click="StepButton_Click"/>
+            <Button x:Name="ResetButton" Content="Reset" Margin="10,0,0,10" Click="ResetButton_Click"/>
+        </StackPanel>
+        
+        <Image x:Name="GameOfLifeImage" Stretch="Uniform" Grid.Column="1" Grid.Row="1"/>
     </Grid>
 </Window>
